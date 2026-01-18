@@ -37,18 +37,18 @@
 
 ```mermaid
 graph TD
-    A[Start] --> B(配置與連線 AuthManager);
-    B --> C{SettleManager: 計算當期合約};
-    C -->|Extract| D[Shioaji API: 抓取原始 K 線];
-    D --> E[Transform: 重取樣 5K/60K & 切割盤別];
-    E --> F[Transform: 換月價差調整 (Back Adjust)];
+    A[Start] --> B("配置與連線 AuthManager")
+    B --> C{"SettleManager: 計算當期合約"}
+    C -->|Extract| D["Shioaji API: 抓取原始 K 線"]
+    D --> E["Transform: 重取樣 5K/60K & 切割盤別"]
+    E --> F["Transform: 換月價差調整 (Back Adjust)"]
     
-    F --> G{Validate: 完整性檢查 (Gate 1)};
-    G -- 資料缺漏 --> H[中止程序 & 報錯];
-    G -- 通過 --> I{Load: 水位線檢查 (Gate 2)};
+    F --> G{"Validate: 完整性檢查 (Gate 1)"}
+    G -- 資料缺漏 --> H["中止程序 & 報錯"]
+    G -- 通過 --> I{"Load: 水位線檢查 (Gate 2)"}
     
-    I -- 資料已存在 --> J[Skip];
-    I -- 發現新資料 --> K[上傳至 Google Sheets];
+    I -- 資料已存在 --> J[Skip]
+    I -- 發現新資料 --> K["上傳至 Google Sheets"]
 
 ```
 
