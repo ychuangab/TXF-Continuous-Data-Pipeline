@@ -1,0 +1,8 @@
+shioaji>=1.0.0
+gspread>=5.0.0
+pandas>=1.3.0
+numpy
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+python-dotenv
