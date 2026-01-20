@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""main.py"""
+"""TXF-Continuous-Data-Pipeline.py"""
 
 # 安裝必要套件 (Colab 環境專用)
 # !pip install shioaji
@@ -323,8 +323,51 @@ class DataProcessor:
         return df_5m_final, df_60m_final
 
     @staticmethod
+    def drop_incomplete_current_session(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+        """
+        [過濾器] 若當下的盤別尚未收盤 (資料筆數不足)，直接捨棄該盤所有資料，不進行上傳。
+        確保上傳的都是「已完結」的盤。
+        """
+        EXPECTED = {
+            '5min':  {'D': 60, 'N': 168},
+            '60min': {'D': 5,  'N': 14}
+        }
+        if timeframe not in EXPECTED or df.empty: return df
+
+        # 1. 取得最後一筆資料的盤別分組
+        last_ts = df.index[-1]
+
+        # 定義分組邏輯 (Local function to avoid repetition)
+        def get_group_id(ts):
+            if 8 <= ts.hour <= 13: return ts.strftime('%Y-%m-%d') + '_D'
+            elif ts.hour >= 15: return ts.strftime('%Y-%m-%d') + '_N'
+            elif ts.hour < 5: return (ts - timedelta(days=1)).strftime('%Y-%m-%d') + '_N'
+            return 'UNKNOWN'
+
+        last_group_id = get_group_id(last_ts)
+
+        # 2. 判斷當下時間是否就是該盤 (是否正在進行中)
+        now = datetime.now(timezone(timedelta(hours=+8)))
+        current_active_id = get_group_id(now)
+
+        # 3. 檢查筆數
+        # 為了效能，只抓最後 200 筆來判斷即可
+        df_tail = df.iloc[-200:].copy()
+        df_tail['group'] = df_tail.index.to_series().apply(get_group_id)
+
+        last_group_count = len(df_tail[df_tail['group'] == last_group_id])
+        expected_count = EXPECTED[timeframe].get(last_group_id.split('_')[-1], 0)
+
+        # 4. 決策：如果是「正在進行中」且「筆數不足」，則丟棄
+        if last_group_id == current_active_id and last_group_count < expected_count:
+            print(f"[Filter] 偵測到盤中資料 {last_group_id} 尚未收盤 ({last_group_count}/{expected_count}) -> 捨棄不處理 (寧缺勿濫)。")
+            return df.iloc[:-last_group_count]
+
+        return df
+
+    @staticmethod
     def check_completeness(df: pd.DataFrame, timeframe: str):
-        """[資料完整性檢查]"""
+        """[資料完整性檢查] (嚴格版：所有資料必須完整)"""
         EXPECTED = {
             '5min':  {'D': 60, 'N': 168},
             '60min': {'D': 5,  'N': 14}
@@ -365,12 +408,42 @@ class SheetUploader:
     """處理 Google Sheets 的寫入與上傳邏輯"""
 
     @staticmethod
+    def get_last_timestamp(gc, tab_name: str) -> Optional[pd.Timestamp]:
+        """[新增] 讀取 Google Sheet 上最後一筆資料的時間"""
+        try:
+            worksheet = gc.open_by_key(GSHEET_ID_DATA).worksheet(tab_name)
+            # 為了效能，我們只抓最後幾列來判斷即可，不需要抓整張表
+            # 但考慮到可能表是空的，我們用安全的方法
+            all_values = worksheet.get_all_values()
+
+            if len(all_values) < 2: # 只有標頭或空的
+                return None
+
+            # 假設第一欄是 ts (根據 _prepare_data 的邏輯)
+            headers = all_values[0]
+            if 'ts' not in headers:
+                return None
+
+            ts_idx = headers.index('ts')
+            last_row = all_values[-1]
+            last_ts_str = last_row[ts_idx]
+
+            return pd.to_datetime(last_ts_str)
+
+        except (gspread.WorksheetNotFound, Exception) as e:
+            # 如果表不存在，代表全是新資料，回傳 None
+            return None
+
+    @staticmethod
     def _prepare_data(df_new: pd.DataFrame, existing_data: list) -> Tuple[pd.DataFrame, bool]:
         """[純邏輯] 資料清洗與比對"""
         df_process = df_new.copy()
-        df_process.index.name = 'ts'
-        df_process.reset_index(inplace=True)
-        df_process['ts'] = df_process['ts'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        if df_process.index.name == 'ts':
+             df_process.reset_index(inplace=True)
+
+        # 確保 ts 是字串格式以便上傳
+        if 'ts' in df_process.columns:
+             df_process['ts'] = pd.to_datetime(df_process['ts']).dt.strftime('%Y-%m-%d %H:%M:%S')
 
         # A. 空表
         if not existing_data:
@@ -383,7 +456,7 @@ class SheetUploader:
             valid_cols = [c for c in headers if c in df_process.columns]
             return df_process[valid_cols], False
 
-        # C. 正常更新
+        # C. 正常更新 (這裡其實已經在 Main 做過過濾了，但保留著當雙重保險)
         try:
             ts_col_idx = headers.index('ts') if 'ts' in headers else 0
             last_ts_str = existing_data[-1][ts_col_idx]
@@ -404,12 +477,17 @@ class SheetUploader:
     @staticmethod
     def append_safely(gc, tab_name: str, df_new: pd.DataFrame):
         """[I/O 操作] 連線並執行上傳 (使用全域常數 GSHEET_ID_DATA)"""
+        if df_new.empty:
+            print(f"[{tab_name}] No new data to upload (Filter blocked).")
+            return
+
         try:
             worksheet = gc.open_by_key(GSHEET_ID_DATA).worksheet(tab_name)
             existing_data = worksheet.get_all_values()
         except gspread.WorksheetNotFound:
-            print(f"[Error] Worksheet '{tab_name}' not found. Skipping.")
-            return
+            print(f"[{tab_name}] Worksheet not found. Creating new...")
+            # 這裡簡單處理：如果找不到就當作空表，但通常應該要先手動建好
+            existing_data = []
         except Exception as e:
             print(f"[Error] Google Sheet Connection failed: {e}")
             return
@@ -454,20 +532,55 @@ if __name__ == "__main__":
         api.logout()
 
         if not df_raw.empty:
-            # 4. 數據處理
+            # 4. 數據處理 (Resample -> D/N Split -> Back Adjust)
             df_5m, df_60m = DataProcessor.resample_and_split(df_raw, settle_mgr.df_config)
 
+            # 4.1 過濾掉尚未收盤的當下資料 (避免盤中資料不全導致報錯)
+            df_5m = DataProcessor.drop_incomplete_current_session(df_5m, '5min')
+            df_60m = DataProcessor.drop_incomplete_current_session(df_60m, '60min')
+
+            # ================================================================
+            # 4.2 [關鍵修正] 增量更新過濾 (Incremental Filter)
+            # 先去 Sheet 看最後一筆是幾點，只保留「比它新」的資料
+            # 這樣舊日期的資料缺漏 (如 01-12) 就會被這裡濾掉，不會觸發 Error
+            # ================================================================
+
+            def filter_new_only(df, tab_name):
+                last_ts = SheetUploader.get_last_timestamp(gc, tab_name)
+                if last_ts is not None and not df.empty:
+                    original_count = len(df)
+                    # 保留 index 時間大於 Sheet 最後時間的資料
+                    df_new = df[df.index > last_ts].copy()
+                    filtered_count = len(df_new)
+                    if filtered_count < original_count:
+                        print(f"[{tab_name}] Incremental Filter: {original_count} -> {filtered_count} rows (Dropped old data).")
+                    return df_new
+                return df
+
+            print("--- Filtering New Data Only ---")
+            df_5m = filter_new_only(df_5m, TAB_NAME_5MIN)
+            df_60m = filter_new_only(df_60m, TAB_NAME_60MIN)
+
             # 5. 完整性檢查
-            DataProcessor.check_completeness(df_5m, '5min')
-            DataProcessor.check_completeness(df_60m, '60min')
+            # (現在這裡只會檢查「真正要上傳」的新資料，舊的壞資料已經被濾掉了)
+            if not df_5m.empty:
+                DataProcessor.check_completeness(df_5m, '5min')
+                # 補上代碼
+                df_5m['MXF_code'] = used_code
+                # 6. 上傳
+                SheetUploader.append_safely(gc, TAB_NAME_5MIN, df_5m)
+            else:
+                print(f"[{TAB_NAME_5MIN}] All data is up-to-date. Skipping check & upload.")
 
-            # 補上代碼
-            df_5m['MXF_code'] = used_code
-            df_60m['MXF_code'] = used_code
+            if not df_60m.empty:
+                DataProcessor.check_completeness(df_60m, '60min')
+                # 補上代碼
+                df_60m['MXF_code'] = used_code
+                # 6. 上傳
+                SheetUploader.append_safely(gc, TAB_NAME_60MIN, df_60m)
+            else:
+                print(f"[{TAB_NAME_60MIN}] All data is up-to-date. Skipping check & upload.")
 
-            # 6. 上傳
-            SheetUploader.append_safely(gc, TAB_NAME_5MIN, df_5m)
-            SheetUploader.append_safely(gc, TAB_NAME_60MIN, df_60m)
         else:
             print("[Warning] No data fetched from API.")
 
@@ -481,3 +594,4 @@ if __name__ == "__main__":
 
     except Exception as e:
         print(f"[FATAL ERROR] Script crashed: {e}")
+
