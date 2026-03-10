@@ -4,3 +4,8 @@ node_modules/
 .clasp.json
 .google/
 .env
+.venv/
+shioaji.log
+.agent/
+.claude/
+.opencode/

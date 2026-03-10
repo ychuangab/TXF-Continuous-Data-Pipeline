@@ -42,11 +42,11 @@ graph TD
     C -->|Extract| D["Shioaji API: 抓取原始 K 線"]
     D --> E["Transform: 重取樣 5K/60K & 切割盤別"]
     E --> F["Transform: 換月價差調整 (Back Adjust)"]
-    
+
     F --> G{"Validate: 完整性檢查 (Gate 1)"}
     G -- 資料缺漏 --> H["中止程序 & 報錯"]
     G -- 通過 --> I{"Load: 水位線檢查 (Gate 2)"}
-    
+
     I -- 資料已存在 --> J[Skip]
     I -- 發現新資料 --> K["上傳至 Google Sheets"]
 
@@ -89,11 +89,11 @@ graph TD
 
 ## ⚙️ 技術堆疊 (Tech Stack)
 
-* **語言**: Python
+* **語言**: Python 3.10+
 * **資料源**: Shioaji API (Sinopac)
 * **資料處理**: Pandas (Time-series resampling, DataFrame manipulation)
 * **資料儲存**: Google Sheets API (via `gspread`)
-* **環境**: Google Colab / Local Python Environment
+* **環境**: Google Colab / Local Python / Docker + VPS
 
 ---
 
@@ -111,15 +111,22 @@ graph TD
     ```
 
 2.  **設定環境變數 (.env)**
-    在專案根目錄建立一個名為 `.env` 的檔案，並填入以下內容：
-    *(注意：請勿將此檔案上傳至 GitHub)*
+    複製 `.env.example` 並填入實際值：
+    ```bash
+    cp .env.example .env
+    ```
     ```ini
+    # 必要設定
     SHIOAJI_API_KEY=你的永豐API_Key
     SHIOAJI_SECRET_KEY=你的永豐Secret_Key
-    GSHEET_CREDENTIALS={"type": "service_account", ...}  <-- JSON 字串需壓縮成一行
+    GSHEET_CREDENTIALS={"type": "service_account", ...}  # JSON 字串壓縮成一行
     GSHEET_ID_DATA=你的K棒資料表ID
     GSHEET_ID_SETTLE=你的結算設定表ID
+
+    # 選填：推播通知 Token（Roadmap Phase 1）
+    NOTIFY_TOKEN=
     ```
+    *(注意：請勿將 `.env` 檔案上傳至 GitHub)*
 
 3.  **執行程式**
     ```bash
@@ -165,14 +172,47 @@ graph TD
     `accumulated_contract_diff` 欄位顯示了數值 (如範例中的 `2737`)，代表系統已自動將歷史換月缺口補齊，這是進行精確回測的關鍵。
 3.  **資料完整性**：
     包含自動生成的 `MXF_code` (合約代碼) 與 `contract_year_month`，讓每一筆 K 棒都能追溯其原始合約。
+
 ---
 
-## 📝 後續可能規劃 (Roadmap)
+## 📐 規格文件 (Specifications)
 
-* 整合 **Line Notify** 進行執行結果推播。
-* 遷移至 **Docker** 並部署於 VPS (如 GCP e2-micro)。
-* 串接 **Google Apps Script** 觸發回測策略信號。
+本專案採用 OpenSpec 管理系統規格與實作規劃，文件位於 `openspec/` 目錄。
 
+### 已完成規格
+
+| 規格文件 | 說明 |
+| :--- | :--- |
+| [`specs/etl-pipeline`](openspec/changes/txf-pipeline-spec-and-roadmap/specs/etl-pipeline/spec.md) | ETL 核心流程：Extract / Resample / 日夜盤切割 |
+| [`specs/data-validation`](openspec/changes/txf-pipeline-spec-and-roadmap/specs/data-validation/spec.md) | Gate 1 完整性檢查與盤中資料過濾 |
+| [`specs/incremental-update`](openspec/changes/txf-pipeline-spec-and-roadmap/specs/incremental-update/spec.md) | Gate 2 水位線機制與冪等性保證 |
+| [`specs/settle-management`](openspec/changes/txf-pipeline-spec-and-roadmap/specs/settle-management/spec.md) | 結算日管理、換月調整、合約代碼預測 |
+| [`specs/auth-management`](openspec/changes/txf-pipeline-spec-and-roadmap/specs/auth-management/spec.md) | Google Sheets OAuth 與 Shioaji API 連線管理 |
+
+### Roadmap 規格（待實作）
+
+| 規格文件 | 說明 | 優先順序 |
+| :--- | :--- | :--- |
+| [`specs/notification`](openspec/changes/txf-pipeline-spec-and-roadmap/specs/notification/spec.md) | 推播通知（LINE / Telegram） | Phase 1 |
+| [`specs/deployment`](openspec/changes/txf-pipeline-spec-and-roadmap/specs/deployment/spec.md) | Docker 容器化 + GCP e2-micro 部署 | Phase 2 |
+| [`specs/gas-integration`](openspec/changes/txf-pipeline-spec-and-roadmap/specs/gas-integration/spec.md) | Google Apps Script 回測信號整合 | Phase 3 |
+
+> 完整設計決策請參考 [`design.md`](openspec/changes/txf-pipeline-spec-and-roadmap/design.md)
+
+---
+
+## 📝 後續規劃 (Roadmap)
+
+### Phase 1：可觀測性
+- [ ] 整合推播通知（LINE Messaging API 或 Telegram Bot）進行執行結果推播
+  > ⚠️ Line Notify 官方已停止服務，不建議使用
+
+### Phase 2：自動化部署
+- [ ] **Docker** 容器化
+- [ ] 部署於 **VPS（GCP e2-micro 免費層）**，搭配 Cron Job 自動排程
+
+### Phase 3：回測整合
+- [ ] 串接 **Google Apps Script**，在新資料寫入後自動觸發回測策略信號計算
 
 ---
 
@@ -186,4 +226,3 @@ graph TD
 ## 📜 License
 
 [MIT](LICENSE)
-
